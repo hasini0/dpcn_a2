@@ -1,0 +1,102 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<title>Group 23 — Where each number comes from</title>
+<style>
+  body{font:11px/1.35 Helvetica,Arial,sans-serif;color:#1b2430;margin:28px 32px}
+  h1{font-size:18px;margin:0 0 4px}
+  h2{font-size:13px;margin:16px 0 6px;border-bottom:1px solid #ccc;padding-bottom:3px}
+  p,li{margin:4px 0} .sub{color:#555;margin:0 0 10px}
+  table{border-collapse:collapse;width:100%;margin:6px 0 12px;font-size:10px}
+  th,td{border:1px solid #ccc;padding:4px 6px;vertical-align:top;text-align:left}
+  th{background:#eef2f7} code{font-size:10px}
+  .mono{font-family:Menlo,monospace;font-size:9.5px}
+  .note{color:#444;font-size:10px}
+</style></head><body>
+<h1>DPCN Group 23 — data provenance cheat sheet</h1>
+<p class="sub">Which field on the dashboard comes from which source, and the exact file/function in code. Pipeline: <code>run_all.py</code> → collect → build → dashboard → report.</p>
+
+<h2>1. The three sources (nothing else feeds the dashboard)</h2>
+<table>
+<tr><th>Source</th><th>What it is</th><th>What we take</th><th>What we do <em>not</em> take from it</th></tr>
+<tr><td><b>OpenAlex</b><br>api.openalex.org</td><td>Open scholarly index</td><td>Papers, authors, affiliations, citation counts, DOIs, years, journals/ISSNs, topics, references, citing works, h-index</td><td>Quartiles, CORE ranks, Journal Impact Factor</td></tr>
+<tr><td><b>Scimago / our mapping</b><br><code>scimago.csv</code></td><td>ISSN → Q1/Q2/Q3/Q4</td><td>Journal quartile only</td><td>Impact factor, citations</td></tr>
+<tr><td><b>Our IF lookup</b><br><code>journal_if.py</code></td><td>Hand list of ~2023 JCR-style IF by ISSN</td><td>IF &gt; 5 / IF &gt; 10 bands</td><td>Anything for ISSNs not in the dict (those stay Unlisted)</td></tr>
+</table>
+<p class="note">CORE A*/A/B/C is <b>not loaded</b>. OpenAlex has no CORE ranks. Conference panel is a note, not a ranking.</p>
+
+<h2>2. Files on disk (raw → out → screen)</h2>
+<table>
+<tr><th>File</th><th>Written by</th><th>Function / lines</th><th>Used by</th></tr>
+<tr><td class="mono">raw/institutions.json</td><td>collect.py</td><td><code>resolve()</code> ~L67; saved in <code>cached()</code> ~L191</td><td>build.py L31</td></tr>
+<tr><td class="mono">raw/works.json</td><td>collect.py</td><td><code>fetch_works()</code> L85–96 (OpenAlex /works)</td><td>build.py L31; dashboard.py L49–52 (ISSN for IF colours)</td></tr>
+<tr><td class="mono">raw/authors.json</td><td>collect.py</td><td><code>fetch_authors()</code> L105–114 (h-index from summary_stats)</td><td>build.py L192 <code>hval</code></td></tr>
+<tr><td class="mono">raw/fullauth.json</td><td>collect.py</td><td><code>fetch_full_authors()</code> L172–187 (papers with 100+ authors)</td><td>build.py L33</td></tr>
+<tr><td class="mono">raw/refs.json</td><td>collect.py</td><td><code>fetch_light()</code> L149–154 (referenced works)</td><td>build.py L31, citation + Indian out-flow</td></tr>
+<tr><td class="mono">raw/citers.json</td><td>collect.py</td><td><code>fetch_citers()</code> L157–169 (works that cite us)</td><td>build.py L31, citation + Indian in-flow</td></tr>
+<tr><td class="mono">scimago.csv</td><td>build_quartiles.py L544 (or fetch_scimago.py)</td><td>ISSN;Quartile;Title</td><td>build.py L40–53 <code>quartile()</code></td></tr>
+<tr><td class="mono">journal_if.py</td><td>hand-maintained</td><td><code>IF_BY_ISSN</code>, <code>impact_factor()</code>, <code>if_band()</code></td><td>dashboard.py L4, L17–40, L54–57</td></tr>
+<tr><td class="mono">out/group23_data.csv</td><td>build.py L132–139</td><td>one row per author×paper×institute</td><td>submission file; dashboard.py L11–27 for IF counts</td></tr>
+<tr><td class="mono">out/citation_network.csv</td><td>build.py L141–161</td><td>all citation edges incl. outside world</td><td>submission; <b>not</b> what the dashboard draws</td></tr>
+<tr><td class="mono">out/authorship_network.csv</td><td>build.py L163–173</td><td>co-author pairs (skip &gt;100 authors)</td><td>submission</td></tr>
+<tr><td class="mono">out/indian_connections.csv</td><td>build.py L175–185</td><td>shared papers with Indian partners</td><td>submission; metrics connections built in same file L335–358</td></tr>
+<tr><td class="mono">out/metrics.json</td><td>build.py L362</td><td>all KPIs, charts, networks, flow</td><td>dashboard.py L7; report.py</td></tr>
+<tr><td class="mono">out/dashboard.html</td><td>dashboard.py L195</td><td>embeds Chart.js, vis-network, metrics JSON</td><td>the live dashboard</td></tr>
+</table>
+
+<h2>3. Dashboard panel → source → code</h2>
+<table>
+<tr><th>On screen</th><th>Data from</th><th>Computed in</th><th>Drawn in dashboard.py</th></tr>
+<tr><td>KPI Papers</td><td>OpenAlex works, 2016–2026, attributed to an institute</td><td>build.py L198 <code>d["papers"]</code></td><td>L116</td></tr>
+<tr><td>KPI Citations</td><td>OpenAlex <code>cited_by_count</code> per work, summed</td><td>build.py L198</td><td>L116</td></tr>
+<tr><td>KPI Faculty (≥5 papers)</td><td>OpenAlex authors; we apply threshold 5</td><td>build.py L18, L220–222</td><td>L116</td></tr>
+<tr><td>KPI All authors</td><td>same author list, no threshold</td><td>build.py L220</td><td>L116</td></tr>
+<tr><td>KPI Q1 share</td><td>Scimago quartile via ISSN; % of <b>known</b> journal quartiles</td><td>build.py L200–204</td><td>L115–116</td></tr>
+<tr><td>KPI Median h-index</td><td>OpenAlex author <code>summary_stats.h_index</code></td><td>collect.py L112; build.py L223–226</td><td>L116</td></tr>
+<tr><td>KPI IF &gt; 5 / IF &gt; 10</td><td><code>journal_if.py</code> + ISSN from CSV</td><td>dashboard.py L10–43 (not build.py)</td><td>L116</td></tr>
+<tr><td>Publication trend</td><td>OpenAlex <code>publication_year</code></td><td>build.py L199</td><td>chart <code>c_trend</code> L138</td></tr>
+<tr><td>Quartile doughnut</td><td>Scimago Q via build.py <code>quartile()</code></td><td>build.py L201–202</td><td><code>c_q</code> L139</td></tr>
+<tr><td>IF doughnut + high-IF table</td><td>journal_if.py</td><td>dashboard.py <code>_stats_from</code> L29–40</td><td><code>c_if</code> L140–141; table <code>t_ifj</code> L123</td></tr>
+<tr><td>Top 5 journals</td><td>OpenAlex venue <code>display_name</code></td><td>build.py L205</td><td><code>c_j</code> L142</td></tr>
+<tr><td>h-index histogram</td><td>OpenAlex h-index, binned 0–79</td><td>build.py L224–225</td><td><code>c_h</code> L143</td></tr>
+<tr><td>Research areas</td><td>OpenAlex <code>primary_topic.field</code></td><td>build.py L206 (top 12)</td><td><code>c_f</code> L144</td></tr>
+<tr><td>Conference CORE</td><td>would need CORE; we do not have it</td><td>build.py L207 (Unranked)</td><td>L127, L145</td></tr>
+<tr><td>Faculty table</td><td>OpenAlex name, h, papers, cites; “dept” = most common field</td><td>build.py L210–222</td><td>table <code>t_fac</code> L128</td></tr>
+<tr><td>Most-cited papers</td><td>OpenAlex title, journal, year, cites, doi, author count</td><td>build.py L208–209</td><td>table <code>t_top</code> L129</td></tr>
+<tr><td>Citation network</td><td>OpenAlex referenced_works + our papers; IF colour from journal_if</td><td>build.py <code>cit_stats</code> L230–275 (viz = top 250); dashboard.py L53–57 colours</td><td><code>n_cit</code> L130, L187</td></tr>
+<tr><td>Authorship network</td><td>OpenAlex co-authors; Louvain via NetworkX</td><td>build.py <code>auth_stats</code> L277–305</td><td><code>n_aut</code> L131, L187</td></tr>
+<tr><td>PageRank top 10</td><td>internal citation graph</td><td>build.py L239, L262–263 NetworkX pagerank</td><td>table <code>t_pr</code> L132</td></tr>
+<tr><td>Quality-weighted PageRank</td><td>same graph × Scimago Q of <b>cited</b> paper (5/3/2/1)</td><td>build.py L242–253, L264–267</td><td>table <code>t_wpr</code> L133</td></tr>
+<tr><td>Betweenness / degree</td><td>co-author graph</td><td>build.py L288–300</td><td><code>t_bc</code> <code>t_dg</code> L134</td></tr>
+<tr><td>Citation in/out flow</td><td>citers.json + refs.json; Indian <code>country_code == IN</code></td><td>build.py <code>flow_stats</code> L307–328</td><td><code>c_flow</code> L135, L147</td></tr>
+<tr><td>Top Indian institutes citing / cited</td><td>same flow counters</td><td>build.py L327</td><td><code>t_ci</code> <code>t_co</code> L135</td></tr>
+<tr><td>Connectivity + Jaccard</td><td>co-affiliations on our papers + OpenAlex subfields</td><td>build.py L335–358</td><td>table <code>t_cn</code> L136</td></tr>
+</table>
+
+<h2>4. OpenAlex fields we actually request</h2>
+<p class="mono">Works select (collect.py L87–88): id, doi, title, publication_year, type, primary_location, cited_by_count, authorships, referenced_works, primary_topic</p>
+<p class="mono">Authors select (L109): id, display_name, summary_stats, works_count, cited_by_count → we keep h from summary_stats.h_index</p>
+<p>Filter: affiliation in our 4 institute IDs, dates 2016-01-01 … 2026-12-31, types article | review | proceedings-article (collect.py L89–90).</p>
+
+<h2>5. What is computed by us (not downloaded as a ready-made score)</h2>
+<ul>
+<li><b>Faculty flag</b> — threshold ≥5 papers in this corpus (build.py L18). OpenAlex has no faculty field.</li>
+<li><b>Q1 share</b> — Q1 count / (Q1+Q2+Q3+Q4), Unknown excluded (build.py L203–204).</li>
+<li><b>IF bands</b> — ISSN lookup in journal_if.py; Unlisted if missing.</li>
+<li><b>Internal citation graph / PageRank / weighted PageRank</b> — NetworkX on our papers only (build.py L230–253).</li>
+<li><b>Louvain communities, modularity, betweenness, degree</b> — NetworkX (build.py L277–300). Colours on the authorship graph = these communities, not institutes.</li>
+<li><b>In/out Indian citation flow and Jaccard</b> — our counters (build.py L307–358).</li>
+<li><b>Dashboard drawing</b> — only ~250 most-connected nodes (build.py keep[:250] in cit_stats / auth_stats). Full counts are in the note under the graph.</li>
+</ul>
+
+<h2>6. One-line “if they ask where X is”</h2>
+<table>
+<tr><th>They ask</th><th>You say</th></tr>
+<tr><td>Citation counts, years, authors, h-index, topics</td><td>OpenAlex, collected in collect.py, stored raw/*.json</td></tr>
+<tr><td>Q1 / Q2 / Q3 / Q4</td><td>Scimago ISSN map scimago.csv, applied in build.py quartile()</td></tr>
+<tr><td>IF &gt; 5 and IF &gt; 10</td><td>Our table journal_if.py, applied in dashboard.py — not OpenAlex, not Scimago</td></tr>
+<tr><td>The pretty network picture</td><td>metrics.json viz (top 250) + vis-network.js; IF colours patched in dashboard.py</td></tr>
+<tr><td>The 91 MB citation_network.csv</td><td>All edges including the outside world — wider than the dashboard graph</td></tr>
+<tr><td>CORE conference ranks</td><td>Not in the project. OpenAlex does not provide them.</td></tr>
+</table>
+<p class="note">Run order: <code>python3 run_all.py EMAIL [API_KEY]</code> which calls collect.py → build.py → dashboard.py → report.py. Regenerating the HTML after IF/layout edits: <code>python3 dashboard.py</code> only (does not re-hit OpenAlex).</p>
+</body></html>

@@ -1,0 +1,16 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Raw source data
+raw/
+
+# Downloaded SCImago data
+scimago.csv
+
+# Large citation network file
+out/citation_network.csv
+
+# macOS files
+.DS_Store
+**/.DS_Store
