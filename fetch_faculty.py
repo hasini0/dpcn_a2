@@ -21,6 +21,9 @@ PAGES = [
     ("NCBS Bangalore", "Faculty associate (TIFR)", "https://www.ncbs.res.in/faculty-associates", "ncbs"),
     ("NCBS Bangalore", "Former faculty", "https://www.ncbs.res.in/former-faculty", "ncbs"),
     ("SN Bose National Centre", "Faculty", "https://newweb.bose.res.in/people/faculty", "snb"),
+    # no former-faculty page exists; the official PhD alumni list names every thesis supervisor (= current or
+    # former faculty) and every former PhD student
+    ("SN Bose National Centre", "Former PhD student", "https://newweb.bose.res.in/people/Alumnis.jsp", "snb_alumni"),
     ("Bose Institute Kolkata", "Faculty", "https://jcbose.ac.in/faculty", "jcb"),
     ("Bose Institute Kolkata", "Research scientist", "https://jcbose.ac.in/research-scientist", "jcb"),
     ("Bose Institute Kolkata", "Former faculty", "https://jcbose.ac.in/former-faculty", "jcb"),
@@ -47,7 +50,7 @@ def parse_ncbs(t):
         name = TITLE.sub("", strip(m.group(1))).split(",")[0]
         yield name, strip(m.group(2))[:120]
     for m in re.finditer(r"<a [^>]*>\s*((?:Prof|Dr)\.[^<]{3,60}?)\s*</a>(.*?)</div>", t, re.S):   # faculty-associates layout
-        yield TITLE.sub("", strip(m.group(1))), strip(m.group(2))[:120]
+        yield TITLE.sub("", strip(m.group(1))).split(",")[0], strip(m.group(2))[:120]
 
 
 def parse_snb(t):
@@ -59,6 +62,15 @@ def parse_snb(t):
         cells = re.findall(r"<td>(.*?)</td>", m.group(2), re.S)
         if len(cells) >= 3:
             yield strip(cells[1]), (strip(cells[2]) + ("" if caption == "Faculty" else f" ({caption})"))[:120]
+
+
+def parse_snb_alumni(t):
+    for row in re.findall(r"<tr[^>]*>(.*?)</tr>", t, re.S):
+        c = [strip(x) for x in re.findall(r"<td[^>]*>(.*?)</td>", row, re.S)]
+        if len(c) < 5 or not c[0].isdigit(): continue
+        yield c[1].rstrip(" *"), ("Former PhD student", f"PhD {c[4]} with {c[3]}"[:120])
+        for sup in re.split(r"\s*(?:&|,| and )\s*", c[3]):
+            if len(sup) > 4: yield sup, ("PhD supervisor (current/former faculty)", "thesis supervisor in SNBNCBS alumni list")
 
 
 def parse_jcb(t):
@@ -75,13 +87,15 @@ def parse_sinp(t):
 
 def main():
     rows, seen = [], set()
-    for inst, cat, url, kind in PAGES:
+    for inst, cat0, url, kind in PAGES:
         try:
             t = fetch(url)
         except Exception as e:
             print("  !! could not fetch", url, e); continue
         n = 0
         for name, desig in globals()["parse_" + kind](t):
+            cat = cat0
+            if isinstance(desig, tuple): cat, desig = desig
             name = re.sub(r"\s+", " ", name).strip()
             if not name or (inst, cat, name.lower()) in seen: continue
             seen.add((inst, cat, name.lower())); n += 1
@@ -90,7 +104,7 @@ def main():
             if re.search(r"adjunct", desig, re.I) and cat == "Faculty" and not re.search(r"professor|scientist", desig.split("Adjunct")[0], re.I): c = "Adjunct faculty"
             if kind == "jcb" and cat == "Former faculty": c = "Former faculty"
             rows.append({"institution": inst, "name": name, "category": c, "designation": desig, "source": url})
-        print(f"  {inst:25s} {cat:40s} {n:3d}  {url}")
+        print(f"  {inst:25s} {cat0:40s} {n:3d}  {url}")
     with open(os.path.join(HERE, "faculty_roster.csv"), "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=["institution", "name", "category", "designation", "source"])
         w.writeheader(); w.writerows(rows)

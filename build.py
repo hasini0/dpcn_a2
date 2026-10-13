@@ -47,15 +47,17 @@ def same_person(a, b):
     for x in ra:
         for y in rb:
             if x[0] == y[0] and (len(x) == 1 or len(y) == 1 or x == y): return True
+            if min(len(x), len(y)) >= 4 and (x.startswith(y) or y.startswith(x)): return True   # Pinak = Pinakpani
     return False
 ROSTER = {}
 _rp = os.path.join(HERE, "faculty_roster.csv")
 if os.path.exists(_rp):
     for r in csv.DictReader(open(_rp, encoding="utf-8")):
         ROSTER.setdefault(r["institution"], []).append(r)
-CAT_RANK = ["Faculty", "Emeritus", "Adjunct faculty", "Faculty associate (TIFR)", "Former faculty", "Visiting faculty",
-            "Research scientist", "Visiting scientist / research associate"]
-FACULTY_CATS = {"Faculty", "Emeritus", "Adjunct faculty", "Former faculty"}
+CAT_RANK = ["Faculty", "Emeritus", "Adjunct faculty", "Faculty associate (TIFR)", "Former faculty",
+            "PhD supervisor (current/former faculty)", "Visiting faculty", "Research scientist",
+            "Visiting scientist / research associate", "Former PhD student"]
+FACULTY_CATS = {"Faculty", "Emeritus", "Adjunct faculty", "Former faculty", "PhD supervisor (current/former faculty)"}
 def roster_match(inst, name):
     hits = [r for r in ROSTER.get(inst, []) if same_person(name, r["name"])]
     return sorted(hits, key=lambda r: CAT_RANK.index(r["category"]) if r["category"] in CAT_RANK else 99)[0] if hits else None
