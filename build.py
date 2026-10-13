@@ -27,7 +27,43 @@ def clean_journal(n):
     n = n.replace("Physical review", "Physical Review")
     return _CANON.setdefault(norm(n), n)
 MAX_AUTH = 100          # papers with more authors (CMS/ALICE-type) are skipped for co-author pairs
+TEAM_CUT = 10           # feedback round: every statistic is also computed for papers with < 10 and >= 10 authors
+TOP_CITED_N = 30
+from journal_if import impact_factor
 L = lambda f: json.load(open(os.path.join(RAW, f)))
+
+# ---- official faculty rosters (fetch_faculty.py) + manual cross-checks (faculty_checks.csv) ----
+_tok = lambda s: [t for t in re.sub(r"[^a-z ]", " ", re.sub(r"\b(prof|dr)\.?\s", " ", s.lower())).split() if t]
+def same_person(a, b):
+    """Name match that tolerates initials and swapped order (Radhakrishnan Sabarinathan = Sabarinathan Radhakrishnan,
+    A. S. Majumdar = Archan S. Majumdar) but not two different full first names (Sanat Das != Supriya Das)."""
+    ta, tb = _tok(a), _tok(b)
+    fa, fb = {t for t in ta if len(t) > 1}, {t for t in tb if len(t) > 1}
+    shared = fa & fb
+    if len(shared) >= 2: return True
+    if len(shared) != 1: return False
+    ra, rb = [t for t in ta if t not in shared], [t for t in tb if t not in shared]
+    if not ra or not rb: return False
+    for x in ra:
+        for y in rb:
+            if x[0] == y[0] and (len(x) == 1 or len(y) == 1 or x == y): return True
+    return False
+ROSTER = {}
+_rp = os.path.join(HERE, "faculty_roster.csv")
+if os.path.exists(_rp):
+    for r in csv.DictReader(open(_rp, encoding="utf-8")):
+        ROSTER.setdefault(r["institution"], []).append(r)
+CAT_RANK = ["Faculty", "Emeritus", "Adjunct faculty", "Faculty associate (TIFR)", "Former faculty", "Visiting faculty",
+            "Research scientist", "Visiting scientist / research associate"]
+FACULTY_CATS = {"Faculty", "Emeritus", "Adjunct faculty", "Former faculty"}
+def roster_match(inst, name):
+    hits = [r for r in ROSTER.get(inst, []) if same_person(name, r["name"])]
+    return sorted(hits, key=lambda r: CAT_RANK.index(r["category"]) if r["category"] in CAT_RANK else 99)[0] if hits else None
+CHECKS = {}
+_cp = os.path.join(HERE, "faculty_checks.csv")
+if os.path.exists(_cp):
+    for r in csv.DictReader(open(_cp, encoding="utf-8")):
+        CHECKS[(r["institution"], r["name"].lower())] = r
 insts, works, authors, refs, citers = (L("institutions.json"), L("works.json"), L("authors.json"),
                                        L("refs.json"), L("citers.json"))
 FULL = L("fullauth.json") if os.path.exists(os.path.join(RAW, "fullauth.json")) else {}   # complete author lists for 100+ author papers
@@ -91,6 +127,7 @@ for w in works:
     P[wid] = {"id": wid, "doi": w.get("doi") or "", "title": w["title"] or "", "year": w["publication_year"],
               "type": "conference" if is_conf else "journal", "journal": clean_journal(src.get("display_name")),
               "issn": src.get("issn_l") or "", "quartile": "" if is_conf else quartile(src),
+              "ifv": None if is_conf else next((v for v in (impact_factor(x) for x in [src.get("issn_l")] + (src.get("issn") or [])) if v), None),
               "cites": w.get("cited_by_count") or 0, "n_auth": n_auth, "auths": auths, "allinst": allinst, "refs": [short(r) for r in (w.get("referenced_works") or [])],
               "field": (topic.get("field") or {}).get("display_name") or "Unknown",
               "subfield": (topic.get("subfield") or {}).get("display_name") or "Unknown",
@@ -133,7 +170,8 @@ for p in P.values():
                              "year": p["year"], "type": p["type"], "journal_name": p["journal"], "issn": p["issn"],
                              "doi": p["doi"], "citations": p["cites"], "quartile": p["quartile"],
                              "coauthor_institutes": ";".join(coinst), "cites_indian_inst": bool(ref_in),
-                             "cited_by_indian_inst": bool(cited_in)})
+                             "cited_by_indian_inst": bool(cited_in), "n_authors": p["n_auth"],
+                             "impact_factor": p["ifv"] if p["ifv"] is not None else ""})
 df = pd.DataFrame(rows)
 df = df[(df.year >= 2016) & (df.year <= 2026)]
 df.to_csv(f"{OUT}/group{GROUP}_data.csv", index=False)
@@ -187,13 +225,40 @@ ic.to_csv(f"{OUT}/indian_connections.csv", index=False)
 # ======================= METRICS =======================
 SCOPES = NAMES + ["ALL"]
 M = {"faculty_min_papers": FACULTY_MIN_PAPERS, "group": GROUP, "institutions": NAMES, "skipped_mega_papers": skipped,
-     "per": {}, "has_quartiles": bool(Q), "mega_threshold": MAX_AUTH,
-     "unattributed_papers": len(unattributed)}
+     "per": {}, "has_quartiles": bool(Q), "mega_threshold": MAX_AUTH, "team_cut": TEAM_CUT, "top_cited_n": TOP_CITED_N,
+     "unattributed_papers": len(unattributed), "roster_loaded": bool(ROSTER)}
 hval = lambda aid: (authors.get(aid) or {}).get("h")
 in_range = lambda p: bool(p["inst"]) and 2016 <= p["year"] <= 2026
-def scope_papers(scope): return [p for p in P.values() if in_range(p) and (scope == "ALL" or scope in p["inst"])]
+# Author-count modes asked for in the feedback: the same analysis on all papers, on papers with < 10 authors
+# (large collaborations discarded) and on papers with >= 10 authors only.
+MODES = {"all": ("All papers", lambda p: True),
+         "lt10": (f"< {TEAM_CUT} authors", lambda p: p["n_auth"] < TEAM_CUT),
+         "ge10": (f"≥ {TEAM_CUT} authors", lambda p: p["n_auth"] >= TEAM_CUT)}
+MODE = {"f": MODES["all"][1]}
+def scope_papers(scope): return [p for p in P.values() if in_range(p) and MODE["f"](p) and (scope == "ALL" or scope in p["inst"])]
 
-for name in SCOPES:
+def tier(p):
+    """Q1 + IF > 10  ->  'A';   Q1 + 5 < IF <= 10  ->  'B';   anything else -> ''."""
+    if p["quartile"] != "Q1" or not p["ifv"]: return ""
+    return "A" if p["ifv"] > 10 else ("B" if p["ifv"] > 5 else "")
+TIER_NAME = {"A": "Q1 & IF>10", "B": "Q1 & IF>5"}
+PARENT_ORG = {"NCBS Bangalore": {"Tata Institute of Fundamental Research"}}   # NCBS is a TIFR centre: not a "second" affiliation
+
+def paper_brief(p, a=None, excl=()):
+    d = {"t": p["title"], "j": p["journal"], "y": p["year"], "if": p["ifv"], "q": p["quartile"], "c": p["cites"],
+         "n": p["n_auth"], "doi": p["doi"], "tier": tier(p)}
+    if a is not None:   # the author's OTHER affiliations on this paper (e.g. a previous institute)
+        d["co"] = sorted({n for n, c in a["insts"] if n not in excl})[:3]
+    return d
+
+def best_paper(plist):
+    """Best paper = most-cited Q1 & IF>10 paper; if none, most-cited Q1 & IF>5 paper."""
+    for t in ("A", "B"):
+        c = [x for x in plist if tier(x[0]) == t]
+        if c: return max(c, key=lambda x: x[0]["cites"])
+    return None
+
+def per_stats(name):
     ps = scope_papers(name)
     d = {"papers": len(ps), "citations": sum(p["cites"] for p in ps)}
     d["trend"] = {y: sum(1 for p in ps if p["year"] == y) for y in range(2016, 2027)}
@@ -203,28 +268,70 @@ for name in SCOPES:
     known = sum(v for k, v in qc.items() if k != "Unknown")
     d["q1_fraction"] = round(100 * qc.get("Q1", 0) / known, 1) if known else None
     d["top_journals"] = C.Counter(p["journal"] for p in ps if p["journal"]).most_common(5)
+    # top journals restricted to Q1 & IF>5 and Q1 & IF>10 papers
+    d["tier_counts"] = {"Q1 & IF>10": sum(1 for p in ps if tier(p) == "A"), "Q1 & IF>5": sum(1 for p in ps if tier(p) in "AB" and tier(p))}
+    d["tier_journals"] = {}
+    for key, ok in (("gt10", lambda p: tier(p) == "A"), ("gt5", lambda p: tier(p) in ("A", "B"))):
+        cnt = C.Counter(p["journal"] for p in ps if ok(p) and p["journal"])
+        ifs = {p["journal"]: p["ifv"] for p in ps if ok(p)}
+        d["tier_journals"][key] = [[j, ifs[j], n] for j, n in cnt.most_common(10)]
     d["fields"] = C.Counter(p["field"] for p in ps).most_common(12)
     d["conf"] = dict(C.Counter(p["quartile"] or "Unranked" for p in ps if p["type"] == "conference"))
     d["top_cited"] = [{"title": p["title"], "journal": p["journal"], "year": p["year"], "cites": p["cites"], "doi": p["doi"],
-                       "n_authors": p["n_auth"]} for p in sorted(ps, key=lambda p: -p["cites"])[:10]]
+                       "n_authors": p["n_auth"], "ifv": p["ifv"], "quartile": p["quartile"]}
+                      for p in sorted(ps, key=lambda p: -p["cites"])[:TOP_CITED_N]]
+    # ---- faculty table: OpenAlex authors, merged and labelled with the official roster where the name matches ----
     fac = {}
     for p in ps:
         for a in p["auths"]:
             if not a["mine"] or (name != "ALL" and name not in a["mine"]): continue
-            f = fac.setdefault(a["id"], {"name": a["name"], "papers": 0, "cites": 0, "fields": C.Counter(), "journals": C.Counter(),
-                                         "inst": name if name != "ALL" else a["mine"][0]})
+            inst = name if name != "ALL" else a["mine"][0]
+            r = roster_match(inst, a["name"])
+            if r is None and name == "ALL":
+                for alt in a["mine"][1:]:
+                    r = roster_match(alt, a["name"])
+                    if r: inst = alt; break
+            key = ("R", inst, r["name"]) if r else a["id"]
+            f = fac.setdefault(key, {"name": r["name"] if r else a["name"], "inst": inst, "r": r, "ids": C.Counter(), "papers": 0,
+                                     "cites": 0, "fields": C.Counter(), "journals": C.Counter(), "pl": [], "seen": set()})
+            if p["id"] in f["seen"]: continue
+            f["seen"].add(p["id"]); f["ids"][a["id"]] += 1
             f["papers"] += 1; f["cites"] += p["cites"]; f["fields"][p["field"]] += 1
             if p["journal"]: f["journals"][p["journal"]] += 1
-    fl = [{"name": f["name"], "inst": f["inst"], "dept": f["fields"].most_common(1)[0][0], "h": hval(k), "papers": f["papers"],
-           "cites": f["cites"], "top_journal": (f["journals"].most_common(1) or [("", 0)])[0][0]} for k, f in fac.items()]
-    d["authors_all"] = len(fl)
-    fl = [f for f in fl if f["papers"] >= FACULTY_MIN_PAPERS]
-    d["faculty"] = sorted(fl, key=lambda f: -(f["h"] or 0))
-    hs = [f["h"] for f in fl if f["h"] is not None]
+            f["pl"].append((p, a))
+    fl = []
+    for k, f in fac.items():
+        r = f["r"]
+        status = r["category"] if r else "Not on official list"
+        chk = CHECKS.get((f["inst"], f["name"].lower())) or next((v for (i, n), v in CHECKS.items() if i == f["inst"] and same_person(n, f["name"])), None)
+        if chk and chk.get("status"): status = chk["status"]
+        if f["papers"] < FACULTY_MIN_PAPERS and status not in FACULTY_CATS: continue
+        q1j = [(p["journal"], p["ifv"]) for p, _ in f["pl"] if p["quartile"] == "Q1" and p["ifv"] and p["journal"]]
+        bj = max(q1j, key=lambda x: x[1]) if q1j else None
+        bp = best_paper(f["pl"])
+        nA = [p for p, _ in f["pl"] if tier(p) == "A"]; nAB = [p for p, _ in f["pl"] if tier(p)]
+        flags = []
+        if status not in FACULTY_CATS: flags.append(status if r or (chk and chk.get("status")) else "not on any official faculty list")
+        big = [p for p in nA if p["n_auth"] >= TEAM_CUT]
+        if nA and big: flags.append(f"{len(big)} of {len(nA)} Q1·IF>10 papers have ≥{TEAM_CUT} authors")
+        b = paper_brief(*bp, excl=OWN_DISP[f["inst"]] | PARENT_ORG.get(f["inst"], set())) if bp else None
+        if b and b["n"] >= TEAM_CUT: flags.append(f"best paper has {b['n']} authors")
+        if b and b.get("co"): flags.append("best paper also lists " + "; ".join(b["co"]))
+        if len(f["ids"]) > 1: flags.append(f"{len(f['ids'])} OpenAlex profiles merged by name")
+        main_id = f["ids"].most_common(1)[0][0]
+        fl.append({"name": f["name"], "inst": f["inst"], "status": status, "desig": (r or {}).get("designation", ""),
+                   "dept": f["fields"].most_common(1)[0][0], "h": hval(main_id), "papers": f["papers"], "cites": f["cites"],
+                   "top_journal": (f["journals"].most_common(1) or [("", 0)])[0][0],
+                   "best_journal": bj[0] if bj else "", "best_if": bj[1] if bj else None,
+                   "n_a": len(nA), "n_ab": len(nAB), "best": b, "flags": flags, "note": (chk or {}).get("note", "")})
+    d["authors_all"] = len(fac)
+    d["faculty"] = sorted(fl, key=lambda f: (f["status"] not in FACULTY_CATS, -(f["h"] or 0)))
+    d["faculty_verified"] = sum(1 for f in fl if f["status"] in FACULTY_CATS)
+    hs = [f["h"] for f in fl if f["h"] is not None and (f["status"] in FACULTY_CATS or not ROSTER)]
     bins = list(range(0, 85, 5))
     d["h_hist"] = [sum(1 for h in hs if b <= h < b + 5) for b in bins[:-1]]; d["h_bins"] = [f"{b}-{b+4}" for b in bins[:-1]]
     d["h_median"] = float(pd.Series(hs).median()) if hs else None
-    M["per"][name] = d
+    return d
 
 # ---- networks and citation flow, computed PER SCOPE (each institution + whole cluster) ----
 def cit_stats(scope):
@@ -308,7 +415,7 @@ def flow_stats(scope):
     """Citation LINKS (citing work -> cited paper of ours) to/from Indian institutes OUTSIDE the scope.
     scope = one institution: 'outside' = every other institution incl. the other 3 in the group.
     scope = ALL: 'outside' = anything other than the 4 assigned institutions."""
-    inflow, outflow, yin, yout = C.Counter(), C.Counter(), C.Counter(), C.Counter()
+    inflow, outflow, yin, yout, inbig = C.Counter(), C.Counter(), C.Counter(), C.Counter(), C.Counter()
     n_in = n_out = 0
     for p in scope_papers(scope):
         excl = set().union(*OWN_DISP.values()) if scope == "ALL" else OWN_DISP[scope]
@@ -316,7 +423,9 @@ def flow_stats(scope):
             o = indian_others(citers[cid_]["insts"], excl)
             if o:
                 n_in += 1; yin[citers[cid_]["year"]] += 1
-                for x in o: inflow[x] += 1
+                for x in o:
+                    inflow[x] += 1
+                    if p["n_auth"] >= TEAM_CUT: inbig[x] += 1
         for r in set(p["refs"]):
             ins = P[r]["allinst"] if r in P else (refs[r]["insts"] if r in refs else [])
             o = indian_others(ins, excl)
@@ -324,13 +433,8 @@ def flow_stats(scope):
                 n_out += 1; yout[p["year"]] += 1
                 for x in o: outflow[x] += 1
     return {"in": n_in, "out": n_out, "ratio": round(n_in / n_out, 2) if n_out else None,
-            "in_top10": inflow.most_common(10), "out_top10": outflow.most_common(10),
+            "in_top10": [[x, n, round(100 * inbig[x] / n)] for x, n in inflow.most_common(10)], "out_top10": outflow.most_common(10),
             "year_in": {y: yin.get(y, 0) for y in range(2016, 2027)}, "year_out": {y: yout.get(y, 0) for y in range(2016, 2027)}}
-
-M["net"] = {sc: {"cit": cit_stats(sc), "auth": auth_stats(sc), "flow": flow_stats(sc)} for sc in SCOPES}
-# legacy keys (cluster level) used by the report
-M["citnet"], M["authnet"], M["flow"] = M["net"]["ALL"]["cit"], M["net"]["ALL"]["auth"], dict(M["net"]["ALL"]["flow"])
-M["flow"]["per_inst"] = {n: M["net"][n]["flow"] for n in NAMES}
 
 # ---- connectivity map: partner institutes, cross-cluster flag, topic overlap ----
 def cluster_of(n):
@@ -348,15 +452,34 @@ def cluster_of(n):
                     (("university", "college", "universit"), "University")]:
         if any(k in n for k in ks): return lab
     return "Other"
-topics = {name: {p["subfield"] for p in scope_papers(name)} for name in NAMES}
-cc = []
-for name in NAMES:
-    for (nm, partner), v in sorted(((k, v) for k, v in conn.items() if k[0] == name), key=lambda kv: -len(kv[1][0]))[:25]:
-        ptop = {P[x]["subfield"] for x in v[0]}
-        j = len(topics[name] & ptop) / len(topics[name] | ptop) if topics[name] | ptop else 0
-        cc.append({"inst": name, "partner": partner, "shared": len(v[0]), "cites": v[1], "cluster": cluster_of(partner), "jaccard": round(j, 3)})
-M["connections"] = cc
-M["partner_count"] = {n: sum(1 for k in conn if k[0] == n) for n in NAMES}
+def connections():
+    topics = {name: {p["subfield"] for p in scope_papers(name)} for name in NAMES}
+    cn = C.defaultdict(set)
+    for name in NAMES:
+        for p in scope_papers(name):
+            for partner in indian_others(p["allinst"], OWN_DISP[name]): cn[(name, partner)].add(p["id"])
+    cc = []
+    for name in NAMES:
+        for (nm, partner), v in sorted(((k, v) for k, v in cn.items() if k[0] == name), key=lambda kv: -len(kv[1]))[:25]:
+            ptop = {P[x]["subfield"] for x in v}
+            j = len(topics[name] & ptop) / len(topics[name] | ptop) if topics[name] | ptop else 0
+            cc.append({"inst": name, "partner": partner, "shared": len(v), "cites": sum(P[x]["cites"] for x in v),
+                       "cluster": cluster_of(partner), "jaccard": round(j, 3)})
+    return cc, {n: sum(1 for k in cn if k[0] == n) for n in NAMES}
+
+M["modes"] = {}
+for mk, (label, f) in MODES.items():
+    MODE["f"] = f
+    print(f"  metrics for mode '{label}' ...", flush=True)
+    cc, pc = connections()
+    M["modes"][mk] = {"label": label, "per": {sc: per_stats(sc) for sc in SCOPES},
+                      "net": {sc: {"cit": cit_stats(sc), "auth": auth_stats(sc), "flow": flow_stats(sc)} for sc in SCOPES},
+                      "connections": cc, "partner_count": pc}
+# legacy top-level keys (= all papers) used by the report
+A_ = M["modes"]["all"]
+M["per"], M["net"], M["connections"], M["partner_count"] = A_["per"], A_["net"], A_["connections"], A_["partner_count"]
+M["citnet"], M["authnet"], M["flow"] = M["net"]["ALL"]["cit"], M["net"]["ALL"]["auth"], dict(M["net"]["ALL"]["flow"])
+M["flow"]["per_inst"] = {n: M["net"][n]["flow"] for n in NAMES}
 M["generated_from"] = {"works": len(works), "attributed_papers": len(P) - len(unattributed), "rows": len(df),
                        "citation_edges": len(cit), "author_edges": len(aut)}
 json.dump(M, open(f"{OUT}/metrics.json", "w"), default=str)

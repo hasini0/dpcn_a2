@@ -400,7 +400,7 @@ table(s, ["Institution", "In-flow", "Out-flow", "Ratio"],
         F["per_inst"][n]["ratio"]] for n in NAMES],
       7.8, 1.8, 5.1, 0.30, 10)
 table(s, ["Top Indian Institutes Citing Us", "Cites"],
-      [[a[:42], f'{b:,}'] for a, b in F["in_top10"][:6]],
+      [[x[0][:42], f'{x[1]:,}'] for x in F["in_top10"][:6]],
       7.8, 3.5, 5.1, 0.27, 9, [4.0, 1.1])
 tb(s, 0.6, 5.8, 12, 0.5,
    f"Total in-flow: {F['in']:,}  ·  Total out-flow: {F['out']:,}  ·  In/Out ratio: {F.get('ratio','n/a')}",
