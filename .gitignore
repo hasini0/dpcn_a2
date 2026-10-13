@@ -14,3 +14,4 @@ out/citation_network.csv
 # macOS files
 .DS_Store
 **/.DS_Store
+docs/citation_network.csv
